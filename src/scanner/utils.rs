@@ -9,8 +9,8 @@ use std::fmt::Write;
 
 use anyhow::{Result, anyhow};
 
-pub(super) const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
-pub(super) const BACKOFF_STEP: Duration = Duration::from_millis(200);
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
+const BACKOFF_STEP: Duration = Duration::from_millis(200);
 
 pub(super) fn with_u16_length<T>(buf: &mut Vec<u8>, f: T) -> Result<()>
 where
@@ -41,24 +41,34 @@ pub(super) fn resolve(host: &str) -> (&str, SocketAddr) {
     }
 }
 
-pub(super) fn retry_connect(addr: &SocketAddr, attempts: u32) -> Result<TcpStream> {
-    retry(attempts, || {
-        let stream = TcpStream::connect_timeout(addr, SOCKET_TIMEOUT)?;
-        stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
-        stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
-        Ok(stream)
-    })
+pub(super) fn connect(addr: &SocketAddr) -> io::Result<TcpStream> {
+    let stream = TcpStream::connect_timeout(addr, SOCKET_TIMEOUT)?;
+    stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
+    stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
+    Ok(stream)
 }
 
-fn retry<T, F>(attempts: u32, mut op: F) -> Result<T>
+pub(super) enum RetryError {
+    Transient(anyhow::Error),
+    Definitive(anyhow::Error),
+}
+
+impl From<io::Error> for RetryError {
+    fn from(e: io::Error) -> Self {
+        RetryError::Transient(e.into())
+    }
+}
+
+pub(super) fn retry<T, F>(attempts: u32, mut op: F) -> Result<T>
 where
-    F: FnMut() -> io::Result<T>,
+    F: FnMut() -> Result<T, RetryError>,
 {
-    let mut last_err: Option<io::Error> = None;
+    let mut last_err: Option<anyhow::Error> = None;
     for i in 0..attempts {
         match op() {
             Ok(v) => return Ok(v),
-            Err(e) => {
+            Err(RetryError::Definitive(e)) => return Err(e),
+            Err(RetryError::Transient(e)) => {
                 last_err = Some(e);
                 if i + 1 < attempts {
                     thread::sleep(BACKOFF_STEP * (i + 1));
@@ -66,9 +76,7 @@ where
             }
         }
     }
-    Err(last_err
-        .map(anyhow::Error::from)
-        .unwrap_or_else(|| anyhow!("operation failed after {attempts} attempts")))
+    Err(last_err.unwrap_or_else(|| anyhow!("operation failed after {attempts} attempts")))
 }
 
 pub(super) fn hex_lower(bytes: &[u8]) -> String {

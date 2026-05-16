@@ -52,18 +52,23 @@ fn fetch_with_verify(sni: &str, addr: &SocketAddr, verify: bool) -> Result<X509>
         builder.set_security_level(0);
         builder.set_cipher_list("ALL:@SECLEVEL=0")?;
     }
+    let connector = builder.build();
 
-    let stream = utils::retry_connect(addr, CONNECT_ATTEMPTS)?;
-
-    let mut sslconnector = builder.build().configure()?;
-    sslconnector.set_use_server_name_indication(true);
-    sslconnector.set_verify_hostname(verify);
-
-    let ssl_conn = sslconnector.connect(sni, stream)?;
-    let ssl = ssl_conn.ssl();
-
-    let cert = ssl.peer_certificate();
-    cert.ok_or_else(|| anyhow!("failed to fetch cert"))
+    utils::retry(CONNECT_ATTEMPTS, || {
+        let stream = utils::connect(addr)?;
+        let mut sslconnector = connector
+            .configure()
+            .map_err(|e| utils::RetryError::Definitive(e.into()))?;
+        sslconnector.set_use_server_name_indication(true);
+        sslconnector.set_verify_hostname(verify);
+        let ssl_conn = sslconnector
+            .connect(sni, stream)
+            .map_err(|e| utils::RetryError::Definitive(anyhow!("{e}")))?;
+        ssl_conn
+            .ssl()
+            .peer_certificate()
+            .ok_or_else(|| utils::RetryError::Definitive(anyhow!("failed to fetch cert")))
+    })
 }
 
 fn mozilla_store() -> Result<X509Store> {
