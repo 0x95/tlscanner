@@ -1,4 +1,7 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::Result;
+use openssl::rand::rand_bytes;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::scanner::{tls::TlsVersion, utils};
@@ -32,9 +35,13 @@ impl<'a> TLSClientHello<'a> {
     pub fn build_tls_payload(mut self) -> Result<Vec<u8>> {
         // record header
         self.payload.push(0x16);
-        // yes this one should always be tls 1.0 (0x0301)
-        self.payload
-            .extend_from_slice(&(TlsVersion::Tls10 as u16).to_be_bytes());
+        // always tls 1.0 (0x0301) for tls 1.0-1.3
+        self.payload.extend_from_slice(
+            &(match &self.version {
+                TlsVersion::Ssl30 => (TlsVersion::Ssl30 as u16).to_be_bytes(),
+                _ => (TlsVersion::Tls10 as u16).to_be_bytes(),
+            }),
+        );
         let record_len_offset = self.payload.len();
         self.payload.extend_from_slice(&[0, 0]); // record length placeholder
 
@@ -65,11 +72,16 @@ impl<'a> TLSClientHello<'a> {
             .extend_from_slice(&self.version.legacy_wire().to_be_bytes());
 
         // random: 32 bytes.
-        let random = [0x42u8; 32];
-        #[cfg(not(debug_assertions))]
-        {
-            use openssl::rand::rand_bytes;
-            rand_bytes(&mut random)?;
+        let mut random = [0x0u8; 32];
+        rand_bytes(&mut random)?;
+
+        // gmt_unix_time in random for old tls
+        if self.version <= TlsVersion::Tls11 {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as u32)
+                .unwrap_or(0);
+            random[..4].copy_from_slice(&now.to_be_bytes());
         }
 
         self.payload.extend_from_slice(&random);
@@ -96,6 +108,11 @@ impl<'a> TLSClientHello<'a> {
         self.payload.push(0x01);
         // compression - null compression
         self.payload.push(0x00);
+
+        // no extensions for sslv3
+        if self.version == TlsVersion::Ssl30 {
+            return Ok(());
+        }
 
         // extensions
         utils::with_u16_length(self.payload.as_mut(), |b| {

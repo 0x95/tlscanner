@@ -21,8 +21,8 @@ use crate::scanner::{
 type VersionResult = (TlsVersion, Option<Vec<&'static CipherSuite>>);
 
 pub struct TlsScanResults {
-    results: Vec<VersionResult>,
-    certificate: Certificate,
+    pub results: Vec<VersionResult>,
+    pub certificate: Certificate,
 }
 
 pub struct TlsScan<'a> {
@@ -39,7 +39,7 @@ impl<'a> TlsScan<'a> {
     pub fn run(&self) -> Result<TlsScanResults> {
         let results = TlsVersion::iter()
             .rev()
-            .filter(|v| *v >= TlsVersion::Tls10)
+            .filter(|v| *v >= TlsVersion::Ssl30)
             .map(|v| (v, Probe::new(self.sni, self.addr, v).accepted_ciphers()))
             .collect();
         Ok(TlsScanResults {
